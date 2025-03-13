@@ -2,15 +2,19 @@
 import { useRabbitHole } from '@stores/useRabbitHole'
 import { useMessages } from '@stores/useMessages'
 import { useMemory } from '@stores/useMemory'
+import { 
+    fetchUserStatus,
+    updateUserStatus,
+    deleteMemoryPoints,
+    updateTags
+} from '@/services/CustomApiService'
 import ModalBox from '@components/ModalBox.vue'
 import { capitalize } from 'lodash'
 import { ref, computed, onMounted } from 'vue'
 
-interface UserStatus {
-    [key: string]: {
-        [key: string]: boolean
-    }
-}
+// Remove the original interface declaration
+// Add this import at the top with other imports
+import type { UserStatus } from '@/types'
 
 const userStatus = ref<UserStatus>({})
 const loadingStatus = ref(false)
@@ -218,11 +222,11 @@ const currentUserTags = computed(() => {
 })
 
 // Carica lo stato dei tag
+// Remove the original loadUserStatus function and replace with:
 const loadUserStatus = async () => {
     try {
         loadingStatus.value = true
-        const response = await fetch('http://192.168.1.115:1865/custom/user-status')
-        userStatus.value = await response.json()
+        userStatus.value = await fetchUserStatus()
     } catch (err) {
         statusError.value = err as Error
     } finally {
@@ -233,7 +237,6 @@ const loadUserStatus = async () => {
 // Aggiorna lo stato di un tag
 const updateTagStatus = async (tagName: string, newStatus: boolean) => {
     try {
-        // Aggiornamento ottimistico
         const updatedStatus = {
             ...userStatus.value,
             [username.value]: {
@@ -242,18 +245,10 @@ const updateTagStatus = async (tagName: string, newStatus: boolean) => {
             }
         }
         
-        const response = await fetch('http://192.168.1.115:1865/custom/user-status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedStatus)
-        })
-
-        if (!response.ok) throw new Error('Salvataggio fallito')
-        
+        await updateUserStatus(updatedStatus)
         userStatus.value = updatedStatus
     } catch (err) {
         statusError.value = err as Error
-        // Ripristino stato precedente
         userStatus.value[username.value][tagName] = !newStatus
     }
 }
@@ -261,79 +256,39 @@ const updateTagStatus = async (tagName: string, newStatus: boolean) => {
 // Elimina le memory points associate al tag
 const deleteTagMemory = async (tagName: string) => {
     try {
-        // Creiamo un oggetto con il tag come chiave e true come valore
-        const filterData = {
-            [tagName]: true
-        }
+        const filterData = { [tagName]: true }
         
         // 1. Delete memory points
-        const responseMemory = await fetch(`http://192.168.1.115:1865/memory/collections/declarative/points`, {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(filterData)
-        })
+        await deleteMemoryPoints(filterData)
         
-        if (!responseMemory.ok) throw new Error('Eliminazione memoria fallita')
-        
-        // 2. Remove tag from all users in the user status
+        // 2. Remove tag from all users
         const updatedStatus = { ...userStatus.value }
-        
-        // Loop through all users and remove the tag
         Object.keys(updatedStatus).forEach(user => {
             if (updatedStatus[user] && tagName in updatedStatus[user]) {
-                // Create a new object without the deleted tag
-                const userTags = { ...updatedStatus[user] }
-                delete userTags[tagName]
+                const { [tagName]: _, ...userTags } = updatedStatus[user]
                 updatedStatus[user] = userTags
             }
         })
         
-        // Update the user status on the server
-        const responseStatus = await fetch('http://192.168.1.115:1865/custom/user-status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedStatus)
-        })
+        await updateUserStatus(updatedStatus)
         
-        if (!responseStatus.ok) throw new Error('Aggiornamento stato utenti fallito')
-        
-        // 3. Remove tag from tags list
+        // 3. Update tags list
         const currentTags = Object.keys(userStatus.value[username.value] || {})
         const updatedTags = currentTags.filter(tag => tag !== tagName)
+        await updateTags(updatedTags)
         
-        // Fix: Wrap the tags array in an object with a "tags" property
-        const responseTags = await fetch('http://192.168.1.115:1865/custom/tags', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                tags: updatedTags
-            })
-        })
-        
-        if (!responseTags.ok) throw new Error('Eliminazione tag fallita')
-        
-        // Update local state
         userStatus.value = updatedStatus
-        
-        // Feedback visivo opzionale
-        console.log(`Tag "${tagName}" eliminato con successo da tutti gli utenti`)
+        console.log(`Tag "${tagName}" eliminato con successo`)
     } catch (err) {
         statusError.value = err as Error
         console.error(`Errore durante l'eliminazione: ${err}`)
     }
 }
 
-/**
- * Creates a new tag and adds it to the user status for all users
- */
+// Creates a new tag
 const createNewTag = async () => {
-    if (!newTagName.value.trim()) return
-    
     try {
-        // Create a copy of the current user status
         const updatedStatus = { ...userStatus.value }
-        
-        // Add the tag to ALL users with default status false
         Object.keys(updatedStatus).forEach(user => {
             updatedStatus[user] = {
                 ...updatedStatus[user],
@@ -341,40 +296,16 @@ const createNewTag = async () => {
             }
         })
         
-        // Update user status on the server
-        const response = await fetch('http://192.168.1.115:1865/custom/user-status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedStatus)
-        })
-
-        if (!response.ok) throw new Error('Salvataggio tag fallito')
+        await updateUserStatus(updatedStatus)
         
-        // Get current tags list
         const currentTags = Object.keys(userStatus.value[username.value] || {})
-        // Add the new tag if it doesn't exist
         if (!currentTags.includes(newTagName.value)) {
-            const updatedTags = [...currentTags, newTagName.value]
-            
-            // Update tags list on the server
-            const responseTags = await fetch('http://192.168.1.115:1865/custom/tags', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    tags: updatedTags
-                })
-            })
-            
-            if (!responseTags.ok) throw new Error('Aggiornamento lista tag fallito')
+            await updateTags([...currentTags, newTagName.value])
         }
         
-        // Update local state
         userStatus.value = updatedStatus
-        
-        // Reset and close modal
         newTagName.value = ''
         boxAddTag.value?.toggleModal()
-        
     } catch (err) {
         statusError.value = err as Error
         console.error(`Errore durante la creazione del tag: ${err}`)
